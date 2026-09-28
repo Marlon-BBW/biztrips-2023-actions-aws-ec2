@@ -103,7 +103,7 @@ export default function App() {
       <div>
         <Header />
         <main>
-          <h1>Welcome to GitHub-AWS-Biztrips 2026 and 2027</h1>
+          <h1>Welcome to GitHub-AWS-Biztrips 2026 and 2027 with Marco</h1>
           <section id="filters">
             <label htmlFor="month">Filter by Month:</label>
             <select
