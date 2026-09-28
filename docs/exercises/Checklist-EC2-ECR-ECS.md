@@ -1,4 +1,4 @@
-# Checkliste — AWS Academy Lab starten, EC2/ECR/ECS einrichten, GitHub Secrets setzen
+c# Checkliste — AWS Academy Lab starten, EC2/ECR/ECS einrichten, GitHub Secrets setzen
 
 Für den kompletten Durchlauf der Pipeline (`test` → `build` → `deploy` → `docker` → `deploy-ecs`)
 in einer frischen AWS-Academy-Learner-Lab-Session. Reihenfolge von oben nach unten abarbeiten.
