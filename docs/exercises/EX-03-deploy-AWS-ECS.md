@@ -315,17 +315,66 @@ Kurz: ECR ist hier die einfachere, tiefer integrierte Lösung ohne separates Cre
 
 ## Schritt 6: ECS-Service anlegen
 
-```bash
-aws ecs register-task-definition --cli-input-json file://task-definition.json
+Bevor der Service angelegt wird, müssen die IDs aus Schritt 4 bekannt sein. Falls die Shell-Variablen nicht mehr gesetzt sind, können sie so nachgeschlagen werden:
 
+```bash
+# Subnet-IDs der Default-VPC
+VPC_ID=$(aws ec2 describe-vpcs --filters Name=isDefault,Values=true \
+  --query "Vpcs[0].VpcId" --output text --region us-east-1)
+
+SUBNET_1=$(aws ec2 describe-subnets \
+  --filters "Name=vpc-id,Values=$VPC_ID" \
+  --query "Subnets[0].SubnetId" --output text --region us-east-1)
+
+SUBNET_2=$(aws ec2 describe-subnets \
+  --filters "Name=vpc-id,Values=$VPC_ID" \
+  --query "Subnets[1].SubnetId" --output text --region us-east-1)
+
+# Security Group der Tasks
+SG_TASKS=$(aws ec2 describe-security-groups \
+  --filters "Name=group-name,Values=biztrips-tasks-sg" \
+  --query "SecurityGroups[0].GroupId" --output text --region us-east-1)
+
+# Target Group ARN
+TG_ARN=$(aws elbv2 describe-target-groups --names biztrips-tg \
+  --query "TargetGroups[0].TargetGroupArn" --output text --region us-east-1)
+
+echo "Subnets: $SUBNET_1 $SUBNET_2"
+echo "Tasks-SG: $SG_TASKS"
+echo "TG ARN: $TG_ARN"
+```
+
+Task Definition registrieren und den ECS-Service anlegen:
+
+```bash
+# Task Definition aus task-definition.json registrieren
+aws ecs register-task-definition \
+  --cli-input-json file://task-definition.json --region us-east-1
+
+# ECS-Service anlegen
 aws ecs create-service \
   --cluster biztrips-cluster \
   --service-name biztrips-service \
   --task-definition biztrips \
   --desired-count 2 \
   --launch-type FARGATE \
-  --network-configuration "awsvpcConfiguration={subnets=[subnet-aaa,subnet-bbb],securityGroups=[sg-tasks],assignPublicIp=ENABLED}" \
-  --load-balancers "targetGroupArn=arn:aws:elasticloadbalancing:...,containerName=biztrips,containerPort=80"
+  --network-configuration "awsvpcConfiguration={subnets=[$SUBNET_1,$SUBNET_2],securityGroups=[$SG_TASKS],assignPublicIp=ENABLED}" \
+  --load-balancers "targetGroupArn=$TG_ARN,containerName=biztrips,containerPort=80" \
+  --region us-east-1
+```
+
+> **`assignPublicIp=ENABLED`** ist für Tasks in einem öffentlichen Subnet ohne NAT-Gateway zwingend — ohne Public IP kann der Task-Agent weder das Image aus ECR ziehen noch Logs an CloudWatch senden.
+
+Prüfen, ob die Tasks hochkommen:
+
+```bash
+aws ecs list-tasks --cluster biztrips-cluster --service-name biztrips-service \
+  --region us-east-1
+
+# Detailstatus eines Tasks (PROVISIONING → PENDING → RUNNING = alles ok)
+aws ecs describe-tasks --cluster biztrips-cluster \
+  --tasks <task-arn-aus-list-tasks> --region us-east-1 \
+  --query "tasks[0].lastStatus" --output text
 ```
 
 `desired-count 2` sorgt dafür, dass immer zwei Tasks laufen — fällt eine aus, ersetzt der Service sie automatisch. Das ist der Punkt, an dem ECS sich am deutlichsten von EX-01 unterscheidet: Dort gab es genau **eine** Instanz ohne eingebaute Redundanz.
@@ -336,27 +385,46 @@ aws ecs create-service \
 
 Neuer Job in `.github/workflows/deploy.yml`, der auf dem bestehenden `docker`-Job aus EX-02 aufbaut:
 
+Neuer Job in `.github/workflows/deploy.yml`, der auf den bestehenden `docker`-Job aus EX-02 aufbaut. Das Beispiel unten zeigt die im Repo enthaltene **Learner-Lab-Variante** (temporäre Zugangsdaten statt OIDC):
+
 ```yaml
   deploy-ecs:
     name: Image nach ECR pushen und ECS-Service aktualisieren
     runs-on: ubuntu-latest
     needs: docker
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    permissions:
-      id-token: write   # notwendig für OIDC
-      contents: read
+    environment: production
     steps:
       - uses: actions/checkout@v4
 
-      - name: AWS-Credentials via OIDC beziehen
+      # AWS-Academy-Learner-Lab-Fallback: Lab-Accounts erlauben kein iam:CreateRole /
+      # iam:CreateOpenIDConnectProvider, daher hier die temporären Learner-Lab-
+      # Zugangsdaten (AWS Details → AWS CLI im Lab) statt einer per OIDC übernommenen
+      # Rolle. Diese Zugangsdaten laufen mit der Lab-Sitzung ab und müssen bei jeder
+      # neuen Sitzung als GitHub Secrets im "production"-Environment aktualisiert werden.
+      - name: AWS-Credentials aus Learner-Lab-Session beziehen
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::123456789012:role/github-actions-biztrips-ecs
-          aws-region: eu-central-1
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: us-east-1
 
       - name: Bei ECR anmelden
         id: ecr-login
         uses: aws-actions/amazon-ecr-login@v2
+
+      # task-definition.json enthält einen Platzhalter-Account (123456789012) für
+      # executionRoleArn, da die Learner-Lab-Account-ID sich pro Sitzung/Kurs
+      # unterscheidet. Hier wird sie live über die aktuellen Zugangsdaten ermittelt
+      # und in der Task-Definition ersetzt, statt sie manuell pflegen zu müssen.
+      - name: Account-ID der Learner-Lab-Session ermitteln
+        id: aws-account
+        run: echo "id=$(aws sts get-caller-identity --query Account --output text)" >> "$GITHUB_OUTPUT"
+
+      - name: executionRoleArn in Task-Definition aktualisieren
+        run: |
+          sed -i "s#arn:aws:iam::[0-9]*:role/LabRole#arn:aws:iam::${{ steps.aws-account.outputs.id }}:role/LabRole#" task-definition.json
 
       - name: Image bauen und nach ECR pushen
         env:
@@ -366,6 +434,7 @@ Neuer Job in `.github/workflows/deploy.yml`, der auf dem bestehenden `docker`-Jo
         run: |
           docker build \
             --build-arg VITE_API_BASE_URL="${{ vars.VITE_API_BASE_URL }}" \
+            --build-arg VITE_IMGS="${{ vars.VITE_IMGS || 'items' }}" \
             -t "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" \
             -t "$ECR_REGISTRY/$ECR_REPOSITORY:latest" .
           docker push "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
@@ -390,15 +459,20 @@ Neuer Job in `.github/workflows/deploy.yml`, der auf dem bestehenden `docker`-Jo
 
 Wichtige Design-Entscheidungen:
 
-- **`permissions: id-token: write`** — ohne diese Berechtigung kann der Job kein OIDC-Token anfordern und `configure-aws-credentials` schlägt fehl
-- **`wait-for-service-stability: true`** — der Job wartet, bis ECS bestätigt, dass alle neuen Tasks laufen und die alten Tasks abgelöst wurden (Rolling Deployment), statt sofort grün zu melden, während im Hintergrund noch deployed wird
-- Kein SSH-Key, kein `rsync` — die einzige "Zugangsdaten" ist die kurzlebige, auf dieses Repository/diesen Branch eingeschränkte IAM-Rolle
+- **Account-ID per `aws sts get-caller-identity`** — die Learner-Lab-Account-ID wechselt mit jeder Sitzung. Statt sie hart zu codieren, wird sie live aus den temporären Zugangsdaten gelesen und per `sed` in `task-definition.json` eingetragen. Damit muss die Datei nie manuell angefasst werden.
+- **`wait-for-service-stability: true`** — der Job wartet, bis ECS bestätigt, dass alle neuen Tasks laufen und die alten abgelöst wurden (Rolling Deployment), statt sofort grün zu melden, während im Hintergrund noch deployt wird.
+- Kein SSH-Key, kein `rsync` — der einzige Credentials-Bedarf sind die temporären Lab-Zugangsdaten aus den GitHub Secrets `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`.
+- **`environment: production`** — bindet den Job an das Production-Environment in GitHub Settings, in dem die AWS-Secrets hinterlegt sind.
 
-### Benötigte zusätzliche Repository-Variables
+> **Regulärer AWS-Account (OIDC):** Wer kein Learner Lab verwendet, ersetzt den `configure-aws-credentials`-Schritt durch die OIDC-Variante (`role-to-assume: <arn>`) aus dem Exkurs nach Schritt 2 und fügt `permissions: id-token: write` zum Job hinzu. Die Account-ID-Ermittlung und der `sed`-Schritt entfallen dann.
 
-| Variable | Beispiel | Beschreibung |
+### Benötigte GitHub Secrets (`production` Environment)
+
+| Secret | Wert | Wann aktualisieren |
 | --- | --- | --- |
-| `AWS_ROLE_ARN` | `arn:aws:iam::123456789012:role/github-actions-biztrips-ecs` | Rolle aus Schritt 2 (kann statt Klartext in der YAML auch als Variable referenziert werden) |
+| `AWS_ACCESS_KEY_ID` | aus *AWS Details → AWS CLI* im Lab | bei jeder neuen Lab-Sitzung |
+| `AWS_SECRET_ACCESS_KEY` | aus *AWS Details → AWS CLI* im Lab | bei jeder neuen Lab-Sitzung |
+| `AWS_SESSION_TOKEN` | aus *AWS Details → AWS CLI* im Lab | bei jeder neuen Lab-Sitzung |
 
 ---
 

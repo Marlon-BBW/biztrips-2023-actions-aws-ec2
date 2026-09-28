@@ -47,22 +47,101 @@ in einer frischen AWS-Academy-Learner-Lab-Session. Reihenfolge von oben nach unt
 
 Alles in **us-east-1**, Ressourcennamen so wählen, dass sie zu den Namen im
 Workflow passen (`ECR_REPOSITORY: biztrips`, `cluster: biztrips-cluster`,
-`service: biztrips-service`, `family: biztrips` in `task-definition.json`):
+`service: biztrips-service`, `family: biztrips` in `task-definition.json`).
+
+### 2a. ECR-Repository anlegen
 
 - [ ] `aws ecr create-repository --repository-name biztrips --region us-east-1`
+- [ ] Repository-URI notieren: `aws ecr describe-repositories --repository-names biztrips --region us-east-1 --query "repositories[0].repositoryUri" --output text`
+
+### 2b. ECS-Cluster anlegen
+
 - [ ] `aws ecs create-cluster --cluster-name biztrips-cluster --region us-east-1`
-- [ ] Application Load Balancer + Target Group (Typ `ip`, Port 80, Health-Check `/`)
-      anlegen ([EX-03](EX-03-deploy-AWS-ECS.md) Schritt 4)
-- [ ] Security Group der Fargate-Tasks: Port 80 nur von der ALB-Security-Group
-- [ ] `task-definition.json` im Repo-Root anpassen:
-  - [ ] `executionRoleArn` → `arn:aws:iam::<eure-account-id>:role/LabRole`
-        (**nicht** `ecsTaskExecutionRole` — die lässt sich im Learner Lab nicht anlegen)
-  - [ ] `<eure-account-id>` in der `image`-URI ersetzen (wird beim Deploy zwar
-        überschrieben, sollte aber konsistent sein)
-- [ ] Task Definition registrieren: `aws ecs register-task-definition --cli-input-json file://task-definition.json --region us-east-1`
-- [ ] `aws ecs create-service ...` mit `--launch-type FARGATE`, `--desired-count 2`,
-      Subnets/Security-Group/Target-Group aus den vorigen Schritten
-      ([EX-03](EX-03-deploy-AWS-ECS.md) Schritt 6)
+- [ ] Status prüfen: `aws ecs describe-clusters --clusters biztrips-cluster --region us-east-1 --query "clusters[0].status" --output text` → `ACTIVE`
+
+### 2c. VPC und Subnets ermitteln
+
+- [ ] Default-VPC-ID notieren:
+  ```bash
+  aws ec2 describe-vpcs --filters Name=isDefault,Values=true \
+    --query "Vpcs[0].VpcId" --output text --region us-east-1
+  ```
+- [ ] Mindestens zwei Subnet-IDs aus der Default-VPC notieren (für ALB und ECS-Service):
+  ```bash
+  aws ec2 describe-subnets --filters "Name=vpc-id,Values=<vpc-id>" \
+    --query "Subnets[*].SubnetId" --output text --region us-east-1
+  ```
+
+### 2d. Security Groups anlegen
+
+- [ ] Security Group für den **ALB** anlegen (eingehend Port 80, `0.0.0.0/0`):
+  ```bash
+  aws ec2 create-security-group --group-name biztrips-alb-sg \
+    --description "ALB biztrips" --vpc-id <vpc-id> --region us-east-1
+  aws ec2 authorize-security-group-ingress \
+    --group-id <alb-sg-id> --protocol tcp --port 80 --cidr 0.0.0.0/0 --region us-east-1
+  ```
+- [ ] Security Group für die **Fargate-Tasks** anlegen (eingehend Port 80 **nur von ALB-SG**):
+  ```bash
+  aws ec2 create-security-group --group-name biztrips-tasks-sg \
+    --description "ECS Tasks biztrips" --vpc-id <vpc-id> --region us-east-1
+  aws ec2 authorize-security-group-ingress \
+    --group-id <tasks-sg-id> --protocol tcp --port 80 \
+    --source-group <alb-sg-id> --region us-east-1
+  ```
+
+### 2e. Target Group und Application Load Balancer anlegen
+
+- [ ] Target Group vom Typ `ip` anlegen (Health-Check `/`):
+  ```bash
+  aws elbv2 create-target-group --name biztrips-tg \
+    --protocol HTTP --port 80 --vpc-id <vpc-id> \
+    --target-type ip --health-check-path / --region us-east-1
+  ```
+  Target-Group-ARN notieren.
+- [ ] Application Load Balancer in mindestens zwei Subnets anlegen:
+  ```bash
+  aws elbv2 create-load-balancer --name biztrips-alb \
+    --subnets <subnet-1> <subnet-2> --security-groups <alb-sg-id> --region us-east-1
+  ```
+  ALB-ARN und ALB-DNS-Namen notieren.
+- [ ] Listener Port 80 → Target Group anlegen:
+  ```bash
+  aws elbv2 create-listener --load-balancer-arn <alb-arn> \
+    --protocol HTTP --port 80 \
+    --default-actions Type=forward,TargetGroupArn=<tg-arn> --region us-east-1
+  ```
+
+### 2f. task-definition.json anpassen
+
+- [ ] `executionRoleArn` → `arn:aws:iam::123456789012:role/LabRole`
+      (Platzhalter-Account-ID bleibt so — der `deploy-ecs`-Job ersetzt sie zur Laufzeit
+      automatisch via `aws sts get-caller-identity`, kein manuelles Anpassen nötig)
+- [ ] `awslogs-region` und ECR-Image-URI sind bereits auf `us-east-1` gesetzt
+- [ ] `"awslogs-create-group": "true"` muss vorhanden sein — ohne dieses Flag
+      schlägt der Task-Start fehl, wenn die Log-Gruppe noch nicht existiert
+
+### 2g. Task Definition registrieren und ECS-Service anlegen
+
+- [ ] Task Definition registrieren:
+  ```bash
+  aws ecs register-task-definition --cli-input-json file://task-definition.json --region us-east-1
+  ```
+- [ ] ECS-Service anlegen (`desired-count 2` = zwei Tasks für Redundanz):
+  ```bash
+  aws ecs create-service \
+    --cluster biztrips-cluster --service-name biztrips-service \
+    --task-definition biztrips --desired-count 2 --launch-type FARGATE \
+    --network-configuration "awsvpcConfiguration={subnets=[<subnet-1>,<subnet-2>],securityGroups=[<tasks-sg-id>],assignPublicIp=ENABLED}" \
+    --load-balancers "targetGroupArn=<tg-arn>,containerName=biztrips,containerPort=80" \
+    --region us-east-1
+  ```
+
+### 2h. Verifizierung
+
+- [ ] Tasks laufen: `aws ecs list-tasks --cluster biztrips-cluster --service-name biztrips-service --region us-east-1` → zwei Task-ARNs sichtbar
+- [ ] Task-Status: `aws ecs describe-tasks --cluster biztrips-cluster --tasks <task-arn> --region us-east-1 --query "tasks[0].lastStatus" --output text` → `RUNNING`
+- [ ] ALB erreichbar: `curl -I http://<alb-dns-name>/` → HTTP 200 (erst nach dem ersten `deploy-ecs`-Pipeline-Durchlauf, wenn ein Image in ECR vorhanden ist)
 
 ---
 
