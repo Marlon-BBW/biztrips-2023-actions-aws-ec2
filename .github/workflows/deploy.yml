@@ -158,6 +158,18 @@ jobs:
         id: ecr-login
         uses: aws-actions/amazon-ecr-login@v2
 
+      # task-definition.json enthält einen Platzhalter-Account (123456789012) für
+      # executionRoleArn, da die Learner-Lab-Account-ID sich pro Sitzung/Kurs
+      # unterscheidet. Hier wird sie live über die aktuellen Zugangsdaten ermittelt
+      # und in der Task-Definition ersetzt, statt sie manuell pflegen zu müssen.
+      - name: Account-ID der Learner-Lab-Session ermitteln
+        id: aws-account
+        run: echo "id=$(aws sts get-caller-identity --query Account --output text)" >> "$GITHUB_OUTPUT"
+
+      - name: executionRoleArn in Task-Definition aktualisieren
+        run: |
+          sed -i "s#arn:aws:iam::[0-9]*:role/LabRole#arn:aws:iam::${{ steps.aws-account.outputs.id }}:role/LabRole#" task-definition.json
+
       - name: Image bauen und nach ECR pushen
         env:
           ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
