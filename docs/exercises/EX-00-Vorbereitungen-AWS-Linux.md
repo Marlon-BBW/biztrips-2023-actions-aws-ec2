@@ -47,10 +47,10 @@ design decisions below:
 ---
 
 ## 1. Start the lab and launch the instance
-
+c
 1. In AWS Academy: **Start Lab**, wait until the dot next to "AWS" is green, then open the AWS console.
 2. EC2 → **Launch instance**
-    - Name: `biztrips-gitlab`
+    - Name: `biztrips-frontend`
     - AMI: **Amazon Linux 2023** (login user is `ec2-user`; on an Ubuntu AMI it is `ubuntu`)
     - Instance type: `t3.micro`
     - Key pair: **vockey**
