@@ -175,7 +175,7 @@ gh secret set DOCKERHUB_USERNAME --body "<dockerhub-user>"
 gh secret set DOCKERHUB_TOKEN --body "<access-token>"
 ```
 
-### 3c. Repository Secrets (AWS Academy Learner Lab, `deploy-ecs`-Job)
+### 3c. Environment `production` Secrets (AWS Academy Learner Lab, `deploy-ecs`-Job)
 
 Werte aus *AWS Details → AWS CLI* im Lab (Schritt 0) — **läuft mit der Session ab,
 muss bei jeder neuen Lab-Sitzung wiederholt werden**:
@@ -186,10 +186,12 @@ muss bei jeder neuen Lab-Sitzung wiederholt werden**:
 | `AWS_SECRET_ACCESS_KEY` | `aws_secret_access_key` aus dem Lab |
 | `AWS_SESSION_TOKEN` | `aws_session_token` aus dem Lab |
 
+Der `deploy-ecs`-Job läuft im Environment `production` — die AWS-Secrets müssen deshalb **im Environment** hinterlegt werden (nicht als Repo-Secrets), damit GitHub sie diesem Job bereitstellt:
+
 ```bash
-gh secret set AWS_ACCESS_KEY_ID --body "<...>"
-gh secret set AWS_SECRET_ACCESS_KEY --body "<...>"
-gh secret set AWS_SESSION_TOKEN --body "<...>"
+gh secret set AWS_ACCESS_KEY_ID    --env production --body "<...>"
+gh secret set AWS_SECRET_ACCESS_KEY --env production --body "<...>"
+gh secret set AWS_SESSION_TOKEN     --env production --body "<...>"
 ```
 
 ### 3d. Repository Variables (`build`- und `docker`-Job)
@@ -205,10 +207,31 @@ gh secret set AWS_SESSION_TOKEN --body "<...>"
 
 ## 4. Kontrolle vor dem Push
 
-- [ ] `gh secret list` und `gh secret list --env production` zeigen alle sechs Secrets
+- [ ] `gh secret list --env production` zeigt sechs Secrets: `EC2_HOST`, `EC2_USER`, `EC2_SSH_KEY`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`
 - [ ] `gh variable list` zeigt `VITE_API_BASE_URL`, `VITE_IMGS`
-- [ ] `task-definition.json` enthält keine Platzhalter-Account-ID mehr
+- [ ] `task-definition.json` enthält `123456789012` als Platzhalter-Account-ID — das ist korrekt, der `deploy-ecs`-Job ersetzt sie zur Laufzeit automatisch
 - [ ] ECR-Repo, Cluster, Service, ALB stehen und sind in **us-east-1**
+
+> **Hinweis zum `deploy`-Job:** Der EC2-Deploy-Job hat `continue-on-error: true` gesetzt.
+> Falls `EC2_SSH_KEY` nicht konfiguriert ist, schlägt er orange fehl — der Pipeline-Gesamtstatus
+> bleibt aber grün und `docker` + `deploy-ecs` laufen durch. Das ist für den reinen ECS-Betrieb
+> gewollt: der EC2-Schritt ist optional.
 
 Danach: Push auf `main` (oder `workflow_dispatch`) auslöst alle fünf Jobs;
 `deploy`, `docker`, `deploy-ecs` laufen nur bei Push auf `main`, nicht bei Pull Requests.
+---
+
+## 5. Neue Lab-Sitzung (nächste Stunde / nächster Tag)
+
+Alle AWS-Ressourcen bleiben zwischen Sitzungen erhalten — EC2-Instanz, VPC, Subnets,
+Security Groups, ALB, ECR-Repository, ECS-Cluster und laufende Tasks.
+Nur die temporären Zugangsdaten laufen ab — diese drei Schritte genügen:
+
+- [ ] Neues Lab starten, *AWS Details → AWS CLI* öffnen
+- [ ] Drei Secrets im Environment `production` aktualisieren:
+  ```bash
+  gh secret set AWS_ACCESS_KEY_ID    --env production --body "<neuer Wert>"
+  gh secret set AWS_SECRET_ACCESS_KEY --env production --body "<neuer Wert>"
+  gh secret set AWS_SESSION_TOKEN     --env production --body "<neuer Wert>"
+  ```
+- [ ] Push auf `main` (oder `workflow_dispatch`) auslösen — alle fünf Jobs laufen durch

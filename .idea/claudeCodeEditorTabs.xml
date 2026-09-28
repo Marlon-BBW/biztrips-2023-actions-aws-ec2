@@ -1,26 +1,20 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="ClaudeCodeEditorTabs">
-    <option name="activeSessionId" value="00382d4e-e437-4ee3-ad94-9cb013e0429d" />
+    <option name="activeSessionId" value="4e5aa13f-52a1-4062-b711-242aabf50ed6" />
     <option name="openSessionIds">
       <list>
-        <option value="e0caf00b-b7ed-47a1-8874-0e9a4f44efb2" />
         <option value="4e5aa13f-52a1-4062-b711-242aabf50ed6" />
-        <option value="00382d4e-e437-4ee3-ad94-9cb013e0429d" />
       </list>
     </option>
     <option name="sessionPaths">
       <map>
-        <entry key="00382d4e-e437-4ee3-ad94-9cb013e0429d" value="/sessions/new" />
         <entry key="4e5aa13f-52a1-4062-b711-242aabf50ed6" value="/sessions/038eeb08-fe9a-451f-9580-da8504c5607a" />
-        <entry key="e0caf00b-b7ed-47a1-8874-0e9a4f44efb2" value="/sessions/new" />
       </map>
     </option>
     <option name="sessionTitles">
       <map>
-        <entry key="00382d4e-e437-4ee3-ad94-9cb013e0429d" value="Claude Code" />
         <entry key="4e5aa13f-52a1-4062-b711-242aabf50ed6" value="i continue here from the console , is that ok?" />
-        <entry key="e0caf00b-b7ed-47a1-8874-0e9a4f44efb2" value="Claude Code" />
       </map>
     </option>
   </component>

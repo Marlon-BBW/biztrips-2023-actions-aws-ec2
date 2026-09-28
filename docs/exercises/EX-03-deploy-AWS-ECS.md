@@ -383,8 +383,6 @@ aws ecs describe-tasks --cluster biztrips-cluster \
 
 ## Schritt 7: GitHub-Actions-Job `deploy-ecs`
 
-Neuer Job in `.github/workflows/deploy.yml`, der auf dem bestehenden `docker`-Job aus EX-02 aufbaut:
-
 Neuer Job in `.github/workflows/deploy.yml`, der auf den bestehenden `docker`-Job aus EX-02 aufbaut. Das Beispiel unten zeigt die im Repo enthaltene **Learner-Lab-Variante** (temporäre Zugangsdaten statt OIDC):
 
 ```yaml
@@ -473,6 +471,25 @@ Wichtige Design-Entscheidungen:
 | `AWS_ACCESS_KEY_ID` | aus *AWS Details → AWS CLI* im Lab | bei jeder neuen Lab-Sitzung |
 | `AWS_SECRET_ACCESS_KEY` | aus *AWS Details → AWS CLI* im Lab | bei jeder neuen Lab-Sitzung |
 | `AWS_SESSION_TOKEN` | aus *AWS Details → AWS CLI* im Lab | bei jeder neuen Lab-Sitzung |
+
+### Exkurs: Repository Secrets vs. Environment Secrets
+
+In GitHub Actions gibt es zwei Orte, an denen Secrets hinterlegt werden können — und die Wahl entscheidet, welche Jobs sie lesen dürfen:
+
+| | Repository Secret | Environment Secret |
+| --- | --- | --- |
+| **Hinterlegt unter** | *Settings → Secrets and variables → Actions → Secrets* | *Settings → Environments → `<name>` → Secrets* |
+| **Sichtbar für** | **alle** Jobs in allen Workflows des Repos | nur Jobs, die `environment: <name>` deklarieren |
+| **Schutzregeln** | keine | optional: Pflicht-Reviewer, Branch-Einschränkung, Wartezeit |
+| **`gh`-Befehl** | `gh secret set NAME --body "..."` | `gh secret set NAME --env production --body "..."` |
+
+**Warum das in diesem Repo so aufgeteilt ist:**
+
+- `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` → **Repository Secret** — der `docker`-Job hat kein `environment:` gesetzt und kann deshalb nur Repo-Secrets lesen. Docker Hub ist kein Deployment-Ziel mit Schutzanforderungen.
+- `EC2_HOST`, `EC2_USER`, `EC2_SSH_KEY` → **Environment Secret `production`** — nur der `deploy`-Job (mit `environment: production`) darf sie lesen. Ein Angreifer, der einen PR öffnet, kann diese Secrets nicht aus einem PR-Build extrahieren.
+- `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` → **Environment Secret `production`** — aus demselben Grund: der `deploy-ecs`-Job deklariert `environment: production`, alle anderen Jobs bleiben blind.
+
+Die Faustregel: **Zugangsdaten für Produktions-Deployments gehören ins Environment**, nicht ins Repo. Damit lassen sich später Schutzregeln (z. B. manueller Approve-Schritt vor jedem Prod-Deploy) ergänzen, ohne den Workflow umzuschreiben.
 
 ---
 
