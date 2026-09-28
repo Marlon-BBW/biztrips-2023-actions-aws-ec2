@@ -62,6 +62,9 @@ jobs:
     needs: build
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     environment: production
+    # EC2-SSH-Key ist aktuell nicht eingerichtet; Fehler hier sollen den
+    # nachgelagerten ECS-Deploy (docker -> deploy-ecs) nicht blockieren.
+    continue-on-error: true
     steps:
       - name: Build-Artefakt herunterladen
         uses: actions/download-artifact@v4
@@ -141,7 +144,8 @@ jobs:
       # iam:CreateOpenIDConnectProvider, daher hier die temporären Learner-Lab-
       # Zugangsdaten (AWS Details → AWS CLI im Lab) statt einer per OIDC übernommenen
       # Rolle. Diese Zugangsdaten laufen mit der Lab-Sitzung ab und müssen bei jeder
-      # neuen Sitzung als GitHub Secrets aktualisiert werden.
+      # neuen Sitzung als GitHub Secrets environment oder repository?
+      # aktualisiert werden.
       - name: AWS-Credentials aus Learner-Lab-Session beziehen
         uses: aws-actions/configure-aws-credentials@v4
         with:
