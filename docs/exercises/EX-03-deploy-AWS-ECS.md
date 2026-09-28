@@ -44,10 +44,17 @@ Kurz gesagt: EX-01 verschiebt Dateien auf einen Server, den ihr komplett selbst 
 ## Schritt 1: ECR-Repository anlegen
 
 ```bash
-aws ecr create-repository --repository-name biztrips
+aws ecr create-repository --repository-name biztrips --region us-east-1
 ```
 
-Notiert euch die zurückgegebene `repositoryUri`, z. B. `123456789012.dkr.ecr.eu-central-1.amazonaws.com/biztrips`.
+Notiert euch die zurückgegebene `repositoryUri`, z. B. `123456789012.dkr.ecr.us-east-1.amazonaws.com/biztrips` (im Learner Lab immer `us-east-1`).
+
+Überprüfen, ob das Repository angelegt wurde:
+
+```bash
+aws ecr describe-repositories --repository-names biztrips --region us-east-1 \
+  --query "repositories[0].repositoryUri" --output text
+```
 
 ---
 
@@ -127,19 +134,112 @@ den Cluster/Service aus Schritt 3/6, die entsprechend in `us-east-1` statt
 ## Schritt 3: ECS-Cluster anlegen
 
 ```bash
-aws ecs create-cluster --cluster-name biztrips-cluster
+aws ecs create-cluster --cluster-name biztrips-cluster --region us-east-1
 ```
 
-Ein Fargate-Cluster braucht keine eigenen EC2-Instanzen — der Cluster ist zunächst nur ein logischer Namespace für Services/Tasks.
+Ein Fargate-Cluster braucht keine eigenen EC2-Instanzen — der Cluster ist zunächst nur ein logischer Namespace für Services/Tasks. Prüfen, ob der Cluster aktiv ist:
+
+```bash
+aws ecs describe-clusters --clusters biztrips-cluster --region us-east-1 \
+  --query "clusters[0].status" --output text
+# Erwartete Ausgabe: ACTIVE
+```
 
 ---
 
 ## Schritt 4: Application Load Balancer + Target Group
 
-- Eine **Target Group** vom Typ `ip` (Fargate-Tasks bekommen eine ENI mit eigener IP, keine Instance-ID) anlegen, Port 80, Health-Check-Pfad `/`
-- Einen **Application Load Balancer** in mindestens zwei Subnets anlegen, Listener auf Port 80 → leitet an die Target Group weiter
-- Security Group des ALB: eingehend Port 80 aus dem Internet
-- Security Group der Fargate-Tasks: eingehend Port 80 **nur von der Security Group des ALB**
+Fargate-Tasks bekommen eine ENI mit eigener IP (kein fester EC2-Host), weshalb die Target Group den Typ `ip` braucht. Der ALB sitzt davor und prüft die Gesundheit der Tasks über den Health-Check-Pfad `/`.
+
+### 4a. VPC und Subnets ermitteln
+
+Im Learner Lab gibt es eine Default-VPC. Deren ID und die zugehörigen Subnets (mindestens zwei für den ALB) nachschlagen:
+
+```bash
+VPC_ID=$(aws ec2 describe-vpcs --filters Name=isDefault,Values=true \
+  --query "Vpcs[0].VpcId" --output text --region us-east-1)
+echo "VPC: $VPC_ID"
+
+# Alle Subnet-IDs der Default-VPC (durch Leerzeichen getrennt)
+aws ec2 describe-subnets --filters "Name=vpc-id,Values=$VPC_ID" \
+  --query "Subnets[*].SubnetId" --output text --region us-east-1
+```
+
+Zwei der zurückgegebenen Subnet-IDs notieren (z. B. `subnet-aaa111` und `subnet-bbb222`).
+
+### 4b. Security Groups anlegen
+
+```bash
+# Security Group für den ALB (eingehend Port 80 aus dem Internet)
+SG_ALB=$(aws ec2 create-security-group \
+  --group-name biztrips-alb-sg \
+  --description "ALB biztrips" \
+  --vpc-id $VPC_ID \
+  --query GroupId --output text --region us-east-1)
+
+aws ec2 authorize-security-group-ingress \
+  --group-id $SG_ALB --protocol tcp --port 80 --cidr 0.0.0.0/0 \
+  --region us-east-1
+
+echo "ALB-SG: $SG_ALB"
+
+# Security Group für die Fargate-Tasks (Port 80 NUR von der ALB-SG)
+SG_TASKS=$(aws ec2 create-security-group \
+  --group-name biztrips-tasks-sg \
+  --description "ECS Tasks biztrips" \
+  --vpc-id $VPC_ID \
+  --query GroupId --output text --region us-east-1)
+
+aws ec2 authorize-security-group-ingress \
+  --group-id $SG_TASKS --protocol tcp --port 80 \
+  --source-group $SG_ALB --region us-east-1
+
+echo "Tasks-SG: $SG_TASKS"
+```
+
+> **Wichtig:** Die Task-SG darf Port 80 **ausschliesslich** von `$SG_ALB` erlauben. Direktzugriff aus dem Internet soll nur über den ALB erfolgen — dieser Aufbau ist der Punkt, an dem Security-Group-Fehler später zu `HealthCheck failed`-Fehlern führen.
+
+### 4c. Target Group anlegen
+
+```bash
+TG_ARN=$(aws elbv2 create-target-group \
+  --name biztrips-tg \
+  --protocol HTTP --port 80 \
+  --vpc-id $VPC_ID \
+  --target-type ip \
+  --health-check-path / \
+  --query "TargetGroups[0].TargetGroupArn" --output text --region us-east-1)
+
+echo "Target Group ARN: $TG_ARN"
+```
+
+### 4d. Application Load Balancer + Listener anlegen
+
+```bash
+ALB_ARN=$(aws elbv2 create-load-balancer \
+  --name biztrips-alb \
+  --subnets subnet-aaa111 subnet-bbb222 \
+  --security-groups $SG_ALB \
+  --query "LoadBalancers[0].LoadBalancerArn" --output text --region us-east-1)
+
+echo "ALB ARN: $ALB_ARN"
+
+# Listener Port 80 → Target Group
+aws elbv2 create-listener \
+  --load-balancer-arn $ALB_ARN \
+  --protocol HTTP --port 80 \
+  --default-actions Type=forward,TargetGroupArn=$TG_ARN \
+  --region us-east-1
+
+# ALB-DNS-Namen notieren (für spätere Tests)
+ALB_DNS=$(aws elbv2 describe-load-balancers \
+  --load-balancer-arns $ALB_ARN \
+  --query "LoadBalancers[0].DNSName" --output text --region us-east-1)
+
+echo "ALB DNS: $ALB_DNS"
+```
+
+`http://$ALB_DNS` wird nach erfolgreichem ECS-Deploy die App ausliefern.
 
 ---
 
@@ -154,19 +254,20 @@ Ein Fargate-Cluster braucht keine eigenen EC2-Instanzen — der Cluster ist zun�
   "requiresCompatibilities": ["FARGATE"],
   "cpu": "256",
   "memory": "512",
-  "executionRoleArn": "arn:aws:iam::123456789012:role/ecsTaskExecutionRole",
+  "executionRoleArn": "arn:aws:iam::123456789012:role/LabRole",
   "containerDefinitions": [
     {
       "name": "biztrips",
-      "image": "123456789012.dkr.ecr.eu-central-1.amazonaws.com/biztrips:latest",
+      "image": "123456789012.dkr.ecr.us-east-1.amazonaws.com/biztrips:latest",
       "portMappings": [{ "containerPort": 80, "protocol": "tcp" }],
       "essential": true,
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {
           "awslogs-group": "/ecs/biztrips",
-          "awslogs-region": "eu-central-1",
-          "awslogs-stream-prefix": "ecs"
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "ecs",
+          "awslogs-create-group": "true"
         }
       }
     }
@@ -174,9 +275,11 @@ Ein Fargate-Cluster braucht keine eigenen EC2-Instanzen — der Cluster ist zun�
 }
 ```
 
-`ecsTaskExecutionRole` ist eine von AWS vorgegebene Standardrolle (`AmazonECSTaskExecutionRolePolicy`), die dem Container erlaubt, das Image von ECR zu ziehen und Logs nach CloudWatch zu schreiben — analog zur Rolle, die in EX-01 der SSH-User implizit über `sudo`-Rechte auf der Instanz hatte.
+`executionRoleArn` zeigt auf die `LabRole` des Learner Labs — diese vorgegebene Rolle hat die Policy `AmazonECSTaskExecutionRolePolicy` angehängt und erlaubt dem Container, das Image von ECR zu ziehen und Logs nach CloudWatch zu schreiben (analog zur Rolle, die in EX-01 der SSH-User implizit über `sudo`-Rechte auf der Instanz hatte).
 
-> **AWS Academy Learner Lab:** `iam:CreateRole` ist dort gesperrt, eine eigene `ecsTaskExecutionRole` lässt sich also nicht anlegen — stattdessen `executionRoleArn` auf die vorgegebene `LabRole` setzen. Details und weitere Learner-Lab-Anpassungen (Region `us-east-1` statt `eu-central-1`) siehe Exkurs nach Schritt 2.
+> **`awslogs-create-group: "true"`** — ohne dieses Flag schlägt der Task-Start fehl, wenn die CloudWatch-Log-Gruppe `/ecs/biztrips` noch nicht existiert. Mit dem Flag legt der Container-Agent sie beim ersten Start automatisch an, ohne dass vorher `aws logs create-log-group` ausgeführt werden muss.
+
+> **Regulärer AWS-Account:** Wer nicht mit dem Learner Lab arbeitet, legt eine eigene Rolle `ecsTaskExecutionRole` mit der Policy `AmazonECSTaskExecutionRolePolicy` an und trägt deren ARN ein. Im Learner Lab ist `iam:CreateRole` gesperrt — dort bleibt es bei `LabRole`.
 
 ---
 
