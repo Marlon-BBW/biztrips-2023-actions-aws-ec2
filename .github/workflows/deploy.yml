@@ -137,6 +137,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: docker
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    environment: production
     steps:
       - uses: actions/checkout@v4
 
@@ -144,8 +145,7 @@ jobs:
       # iam:CreateOpenIDConnectProvider, daher hier die temporären Learner-Lab-
       # Zugangsdaten (AWS Details → AWS CLI im Lab) statt einer per OIDC übernommenen
       # Rolle. Diese Zugangsdaten laufen mit der Lab-Sitzung ab und müssen bei jeder
-      # neuen Sitzung als GitHub Secrets environment oder repository?
-      # aktualisiert werden.
+      # neuen Sitzung als GitHub Secrets im "production"-Environment aktualisiert werden.
       - name: AWS-Credentials aus Learner-Lab-Session beziehen
         uses: aws-actions/configure-aws-credentials@v4
         with:
